@@ -1,22 +1,22 @@
-const sqlite3 = require('sqlite3');
-const { open } = require('sqlite');
-const path = require('path');
+const { Pool } = require('pg');
 
-let dbPromise = null;
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway')
+    ? { rejectUnauthorized: false }
+    : false
+});
 
-async function query(sql, params = []) {
-  if (!dbPromise) {
-    dbPromise = open({ filename: path.join(__dirname, 'database.sqlite'), driver: sqlite3.Database });
-  }
-  const db = await dbPromise;
-  
-  if (sql.trim().toUpperCase().startsWith('SELECT')) {
-    const rows = await db.all(sql, params);
-    return [rows];
-  } else {
-    const result = await db.run(sql, params);
-    return [result];
-  }
+// Convert ? placeholders to $1, $2, ... for pg
+function convertPlaceholders(sql) {
+  let i = 0;
+  return sql.replace(/\?/g, () => `$${++i}`);
 }
 
-module.exports = { query };
+async function query(sql, params = []) {
+  const pgSql = convertPlaceholders(sql);
+  const result = await pool.query(pgSql, params);
+  return [result.rows];
+}
+
+module.exports = { query, pool };

@@ -7,7 +7,7 @@ const upload = multer();
 const db = require('./db');
 
 const app = express();
-app.use(cors({ origin: 'http://localhost:4200', credentials: true }));
+app.use(cors({ origin: process.env.CORS_ORIGIN || 'http://localhost:4200', credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -269,7 +269,7 @@ app.post('/api/empleados', upload.none(), async (req, res) => {
     const [rows] = await db.query('SELECT * FROM empleados WHERE nombre = ? AND usuario_id = ? LIMIT 1', [nombre, user_id]);
     res.json({ success: true, data: rows[0], message: 'Empleado agregado' });
   } catch (err) {
-    if (err.message.includes('UNIQUE constraint')) {
+    if (err.message.includes('UNIQUE') || err.message.includes('duplicate key')) {
       return res.json({ success: false, message: 'El empleado ya existe para este usuario' });
     }
     res.status(500).json({ success: false, message: 'Error interno' });
@@ -289,7 +289,7 @@ app.delete('/api/empleados/:id', async (req, res) => {
   }
 });
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
 });
