@@ -3,6 +3,7 @@ const bcrypt = require('bcrypt');
 
 async function init() {
   console.log("Inicializando base de datos PostgreSQL...");
+
   await db.query(`
     CREATE TABLE IF NOT EXISTS usuarios (
       id SERIAL PRIMARY KEY,
@@ -19,25 +20,39 @@ async function init() {
       fecha TEXT NOT NULL,
       hora TEXT NOT NULL,
       hora_salida TEXT,
-      total_horas REAL
+      total_horas REAL,
+      usuario_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE
     );
   `);
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS empleados (
       id SERIAL PRIMARY KEY,
-      nombre TEXT UNIQUE NOT NULL
+      nombre TEXT NOT NULL,
+      usuario_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
+      UNIQUE(nombre, usuario_id)
     );
   `);
 
-  const hash = await bcrypt.hash('12345', 10);
-  try {
-    await db.query(`INSERT INTO usuarios (usuario, password, rol) VALUES (?, ?, ?) ON CONFLICT (usuario) DO NOTHING`, ['admin', hash, 'admin']);
-    console.log("Usuario admin (clave 12345) insertado.");
-  } catch (err) {
-    console.log("Usuario admin ya existe.");
-  }
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS session (
+      sid VARCHAR NOT NULL COLLATE "default",
+      sess JSON NOT NULL,
+      expire TIMESTAMP(6) NOT NULL,
+      CONSTRAINT session_pkey PRIMARY KEY (sid)
+    );
+  `);
 
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS IDX_session_expire ON session (expire);
+  `);
+
+  const hash = await bcrypt.hash('12345', 10);
+  await db.query(
+    `INSERT INTO usuarios (usuario, password, rol) VALUES (?, ?, ?) ON CONFLICT (usuario) DO NOTHING`,
+    ['admin', hash, 'admin']
+  );
+  console.log("Usuario admin creado (usuario: admin / clave: 12345).");
   console.log("Inicialización exitosa.");
 }
 
