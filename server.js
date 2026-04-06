@@ -1,21 +1,31 @@
 const express = require('express');
 const cors = require('cors');
 const session = require('express-session');
+const pgSession = require('connect-pg-simple')(session);
 const bcrypt = require('bcrypt');
 const multer = require('multer');
 const upload = multer();
 const db = require('./db');
+const { pool } = require('./db');
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(cors({ origin: process.env.CORS_ORIGIN || 'http://localhost:4200', credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use(session({
-  secret: 'super_secret_key_asistencia',
+  store: new pgSession({
+    pool: pool,
+    tableName: 'session'
+  }),
+  secret: process.env.SESSION_SECRET || 'super_secret_key_asistencia',
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 }
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 24 * 60 * 60 * 1000
+  }
 }));
 
 function hhmmFromMinutes(m) {
@@ -37,7 +47,7 @@ app.post('/api/login', upload.none(), async (req, res) => {
   try {
     const { usuario, password } = req.body;
     if (!usuario || !password) return res.json({ status: 'error', mensaje: 'Usuario y contraseña son requeridos' });
-    
+
     if (req.session.usuario && req.session.usuario === usuario) {
       return res.json({ status: 'ok', mensaje: 'Sesión ya activa', usuario: req.session.usuario, rol: req.session.rol, user_id: req.session.user_id });
     }
@@ -71,9 +81,9 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
   const nombre = (req.body.nombre || '').toLowerCase().trim();
   const accion = req.body.accion;
   if (!nombre) return res.json({ status: 'error', mensaje: 'Debe ingresar su nombre' });
-  
+
   if (!/^[a-záéíóúñ\s]+$/.test(nombre)) {
-     return res.json({ status: 'error', mensaje: 'El nombre solo puede contener letras y espacios' });
+    return res.json({ status: 'error', mensaje: 'El nombre solo puede contener letras y espacios' });
   }
 
   const now = new Date();
@@ -82,24 +92,24 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
   const hora = now.toISOString().split('T')[1].split('.')[0];
 
   try {
-     if (accion === 'entrada') {
-       const [rows] = await db.query(`SELECT id FROM registros WHERE nombre = ? AND fecha = ? AND hora_salida IS NULL AND usuario_id = ?`, [nombre, fecha, user_id]);
-       if (rows.length > 0) return res.json({ status: 'error', mensaje: 'Debes registrar tu SALIDA antes de una nueva ENTRADA' });
-       
-       await db.query(`INSERT INTO registros (nombre, fecha, hora, usuario_id) VALUES (?, ?, ?, ?)`, [nombre, fecha, hora, user_id]);
-       res.json({ status: 'ok', mensaje: `Entrada registrada a las ${hora}` });
-     } else if (accion === 'salida') {
-       const [rows] = await db.query(`SELECT id, hora FROM registros WHERE nombre = ? AND fecha = ? AND hora_salida IS NULL AND usuario_id = ? ORDER BY hora DESC LIMIT 1`, [nombre, fecha, user_id]);
-       if (rows.length === 0) return res.json({ status: 'error', mensaje: 'No hay una ENTRADA activa para registrar SALIDA' });
-       
-       const horaEntrada = rows[0].hora;
-       if (hora <= horaEntrada) return res.json({ status: 'error', mensaje: 'La hora de SALIDA debe ser posterior a la hora de ENTRADA' });
-       
-       await db.query(`UPDATE registros SET hora_salida = ? WHERE id = ? AND usuario_id = ?`, [hora, rows[0].id, user_id]);
-       res.json({ status: 'ok', mensaje: `Salida registrada a las ${hora}` });
-     } else {
-       res.json({ status: 'error', mensaje: 'Acción no válida' });
-     }
+    if (accion === 'entrada') {
+      const [rows] = await db.query(`SELECT id FROM registros WHERE nombre = ? AND fecha = ? AND hora_salida IS NULL AND usuario_id = ?`, [nombre, fecha, user_id]);
+      if (rows.length > 0) return res.json({ status: 'error', mensaje: 'Debes registrar tu SALIDA antes de una nueva ENTRADA' });
+
+      await db.query(`INSERT INTO registros (nombre, fecha, hora, usuario_id) VALUES (?, ?, ?, ?)`, [nombre, fecha, hora, user_id]);
+      res.json({ status: 'ok', mensaje: `Entrada registrada a las ${hora}` });
+    } else if (accion === 'salida') {
+      const [rows] = await db.query(`SELECT id, hora FROM registros WHERE nombre = ? AND fecha = ? AND hora_salida IS NULL AND usuario_id = ? ORDER BY hora DESC LIMIT 1`, [nombre, fecha, user_id]);
+      if (rows.length === 0) return res.json({ status: 'error', mensaje: 'No hay una ENTRADA activa para registrar SALIDA' });
+
+      const horaEntrada = rows[0].hora;
+      if (hora <= horaEntrada) return res.json({ status: 'error', mensaje: 'La hora de SALIDA debe ser posterior a la hora de ENTRADA' });
+
+      await db.query(`UPDATE registros SET hora_salida = ? WHERE id = ? AND usuario_id = ?`, [hora, rows[0].id, user_id]);
+      res.json({ status: 'ok', mensaje: `Salida registrada a las ${hora}` });
+    } else {
+      res.json({ status: 'error', mensaje: 'Acción no válida' });
+    }
   } catch (err) {
     res.json({ status: 'error', mensaje: 'Error del servidor' });
   }
@@ -147,105 +157,104 @@ app.get('/api/weekly_hours', async (req, res) => {
   const cond = [`usuario_id = ?`];
   const params = [user_id];
   if (nombre) {
-     cond.push(`nombre LIKE ?`);
-     params.push(`%${nombre}%`);
+    cond.push(`nombre LIKE ?`);
+    params.push(`%${nombre}%`);
   }
   const where = cond.length > 0 ? `WHERE ` + cond.join(' AND ') : '';
   const sql = `SELECT * FROM registros ${where}`;
 
   function getISOYearWeek(dateStr) {
-     const d = new Date(dateStr);
-     d.setHours(0, 0, 0, 0);
-     d.setDate(d.getDate() + 4 - (d.getDay()||7));
-     const yearStart = new Date(Date.UTC(d.getFullYear(),0,1));
-     const weekNo = Math.ceil(( ( (d - yearStart) / 86400000) + 1)/7);
-     return `${d.getFullYear()}${weekNo.toString().padStart(2, '0')}`;
+    const d = new Date(dateStr);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+    const yearStart = new Date(Date.UTC(d.getFullYear(), 0, 1));
+    const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    return `${d.getFullYear()}${weekNo.toString().padStart(2, '0')}`;
   }
 
   try {
-     const [rows] = await db.query(sql, params);
-     
-     let filtered = rows;
-     if (semana && /^(\d{4})-W(\d{2})$/.test(semana)) {
-        const match = semana.match(/^(\d{4})-W(\d{2})$/);
-        const yw = `${match[1]}${match[2]}`;
-        filtered = rows.filter(r => getISOYearWeek(r.fecha) === yw);
-     }
+    const [rows] = await db.query(sql, params);
 
-     const grouped = {};
-     filtered.forEach(r => {
-        const yw = getISOYearWeek(r.fecha);
-        const key = `${r.nombre}_${yw}`;
-        if (!grouped[key]) {
-           grouped[key] = { nombre: r.nombre, yearWeek: yw, registros: [], fechas: new Set() };
-        }
-        grouped[key].registros.push(r);
-        grouped[key].fechas.add(r.fecha);
-     });
+    let filtered = rows;
+    if (semana && /^(\d{4})-W(\d{2})$/.test(semana)) {
+      const match = semana.match(/^(\d{4})-W(\d{2})$/);
+      const yw = `${match[1]}${match[2]}`;
+      filtered = rows.filter(r => getISOYearWeek(r.fecha) === yw);
+    }
 
-     const out = [];
-     for (const key of Object.keys(grouped)) {
-         const grupo = grouped[key];
-         const diasConDatos = grupo.fechas.size;
-         const year = parseInt(grupo.yearWeek.substring(0,4));
-         const weekNum = parseInt(grupo.yearWeek.substring(4));
+    const grouped = {};
+    filtered.forEach(r => {
+      const yw = getISOYearWeek(r.fecha);
+      const key = `${r.nombre}_${yw}`;
+      if (!grouped[key]) {
+        grouped[key] = { nombre: r.nombre, yearWeek: yw, registros: [], fechas: new Set() };
+      }
+      grouped[key].registros.push(r);
+      grouped[key].fechas.add(r.fecha);
+    });
 
-         function getISODateByWeek(y, w, dow) {
-            let simple = new Date(Date.UTC(y, 0, 1 + (w - 1) * 7));
-            let dowMod = simple.getUTCDay() || 7;
-            const ISOweekStart = new Date(simple.getTime());
-            ISOweekStart.setUTCDate(simple.getUTCDate() - dowMod + 1);
-            ISOweekStart.setUTCDate(ISOweekStart.getUTCDate() + dow - 1);
-            return ISOweekStart.toISOString().split('T')[0];
-         }
+    const out = [];
+    for (const key of Object.keys(grouped)) {
+      const grupo = grouped[key];
+      const diasConDatos = grupo.fechas.size;
+      const year = parseInt(grupo.yearWeek.substring(0, 4));
+      const weekNum = parseInt(grupo.yearWeek.substring(4));
 
-         const lunesISO = getISODateByWeek(year, weekNum, 1);
-         const domingoISO = getISODateByWeek(year, weekNum, 7);
-         const lF = lunesISO.split('-').reverse().join('/');
-         const dF = domingoISO.split('-').reverse().join('/');
+      function getISODateByWeek(y, w, dow) {
+        let simple = new Date(Date.UTC(y, 0, 1 + (w - 1) * 7));
+        let dowMod = simple.getUTCDay() || 7;
+        const ISOweekStart = new Date(simple.getTime());
+        ISOweekStart.setUTCDate(simple.getUTCDate() - dowMod + 1);
+        ISOweekStart.setUTCDate(ISOweekStart.getUTCDate() + dow - 1);
+        return ISOweekStart.toISOString().split('T')[0];
+      }
 
-         let totalMinutos = 0;
-         const regS = grupo.registros.sort((a,b) => a.fecha.localeCompare(b.fecha) || a.hora.localeCompare(b.hora));
-         
-         for (const reg of regS) {
-             let m = null;
-             if (reg.total_horas !== null) m = Math.round(parseFloat(reg.total_horas) * 60);
-             else m = mins(reg.fecha, reg.hora, reg.hora_salida);
-             if (m !== null && m > 0) totalMinutos += m;
-         }
+      const lunesISO = getISODateByWeek(year, weekNum, 1);
+      const domingoISO = getISODateByWeek(year, weekNum, 7);
+      const lF = lunesISO.split('-').reverse().join('/');
+      const dF = domingoISO.split('-').reverse().join('/');
 
-         const horasDecimal = totalMinutos / 60;
-         const datosSuficientes = diasConDatos >= 1;
+      let totalMinutos = 0;
+      const regS = grupo.registros.sort((a, b) => a.fecha.localeCompare(b.fecha) || a.hora.localeCompare(b.hora));
 
-         out.push({
-           nombre: grupo.nombre,
-           semana_iso: `Semana ${weekNum}`,
-           fecha_inicio: lunesISO,
-           fecha_fin: domingoISO,
-           rango_formato: `Lunes ${lF} a Domingo ${dF}`,
-           total_registros: diasConDatos,
-           total_horas_decimal: datosSuficientes ? Number(horasDecimal.toFixed(2)) : null,
-           total_minutos: datosSuficientes ? totalMinutos : null,
-           datos_suficientes: datosSuficientes,
-           mensaje: datosSuficientes ? null : 'Datos insuficientes para calcular semana completa'
-        });
-     }
+      for (const reg of regS) {
+        let m = null;
+        if (reg.total_horas !== null) m = Math.round(parseFloat(reg.total_horas) * 60);
+        else m = mins(reg.fecha, reg.hora, reg.hora_salida);
+        if (m !== null && m > 0) totalMinutos += m;
+      }
 
-     out.sort((a,b) => {
-         const ywA = a.semana_iso;
-         const ywB = b.semana_iso;
-         if (ywA !== ywB) return ywB.localeCompare(ywA);
-         return a.nombre.localeCompare(b.nombre);
-     });
+      const horasDecimal = totalMinutos / 60;
+      const datosSuficientes = diasConDatos >= 1;
 
-     res.json({ success: true, data: out, count: out.length });
-  } catch(err) {
-     console.error(err);
-     res.status(500).json({ error: true, success: false, message: 'Error', data: [] });
+      out.push({
+        nombre: grupo.nombre,
+        semana_iso: `Semana ${weekNum}`,
+        fecha_inicio: lunesISO,
+        fecha_fin: domingoISO,
+        rango_formato: `Lunes ${lF} a Domingo ${dF}`,
+        total_registros: diasConDatos,
+        total_horas_decimal: datosSuficientes ? Number(horasDecimal.toFixed(2)) : null,
+        total_minutos: datosSuficientes ? totalMinutos : null,
+        datos_suficientes: datosSuficientes,
+        mensaje: datosSuficientes ? null : 'Datos insuficientes para calcular semana completa'
+      });
+    }
+
+    out.sort((a, b) => {
+      const ywA = a.semana_iso;
+      const ywB = b.semana_iso;
+      if (ywA !== ywB) return ywB.localeCompare(ywA);
+      return a.nombre.localeCompare(b.nombre);
+    });
+
+    res.json({ success: true, data: out, count: out.length });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: true, success: false, message: 'Error', data: [] });
   }
 });
 
-// 6. GET /api/empleados
 app.get('/api/empleados', async (req, res) => {
   if (!req.session || !req.session.user_id) return res.json({ success: false, message: 'No autenticado', data: [] });
   const user_id = req.session.user_id;
@@ -257,14 +266,13 @@ app.get('/api/empleados', async (req, res) => {
   }
 });
 
-// 7. POST /api/empleados
 app.post('/api/empleados', upload.none(), async (req, res) => {
   if (!req.session || !req.session.user_id) return res.json({ success: false, message: 'No autenticado' });
   const user_id = req.session.user_id;
   try {
     const nombre = (req.body.nombre || '').trim();
     if (!nombre) return res.json({ success: false, message: 'Nombre es requerido' });
-    
+
     await db.query('INSERT INTO empleados (nombre, usuario_id) VALUES (?, ?)', [nombre, user_id]);
     const [rows] = await db.query('SELECT * FROM empleados WHERE nombre = ? AND usuario_id = ? LIMIT 1', [nombre, user_id]);
     res.json({ success: true, data: rows[0], message: 'Empleado agregado' });
@@ -276,7 +284,6 @@ app.post('/api/empleados', upload.none(), async (req, res) => {
   }
 });
 
-// 8. DELETE /api/empleados/:id
 app.delete('/api/empleados/:id', async (req, res) => {
   if (!req.session || !req.session.user_id) return res.json({ success: false, message: 'No autenticado' });
   const user_id = req.session.user_id;
@@ -291,5 +298,5 @@ app.delete('/api/empleados/:id', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on http://localhost:${PORT}`);
 });
