@@ -250,19 +250,11 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
  */
 app.get('/api/attendance_list', async (req, res) => {
   const user_id = req.user_id;
-  const isAdmin = req.rol === 'admin';
   const { desde, hasta, nombre } = req.query;
 
-  let sql, params, paramCount;
-  if (isAdmin) {
-    sql = `SELECT id, nombre, fecha, hora, hora_salida, total_horas FROM registros WHERE 1=1`;
-    params = [];
-    paramCount = 1;
-  } else {
-    sql = `SELECT id, nombre, fecha, hora, hora_salida, total_horas FROM registros WHERE usuario_id = $1`;
-    params = [user_id];
-    paramCount = 2;
-  }
+  let sql = `SELECT id, nombre, fecha, hora, hora_salida, total_horas FROM registros WHERE usuario_id = $1`;
+  let params = [user_id];
+  let paramCount = 2;
 
   if (desde && /^\\d{4}-\\d{2}-\\d{2}$/.test(desde)) { sql += ` AND fecha >= $${paramCount}`; params.push(desde); paramCount++; }
   if (hasta && /^\\d{4}-\\d{2}-\\d{2}$/.test(hasta)) { sql += ` AND fecha <= $${paramCount}`; params.push(hasta); paramCount++; }
@@ -311,17 +303,10 @@ app.get('/api/attendance_list', async (req, res) => {
  */
 app.get('/api/weekly_hours', async (req, res) => {
   const user_id = req.user_id;
-  const isAdmin = req.rol === 'admin';
   const { nombre, semana } = req.query;
-  const cond = [];
-  const params = [];
-  let paramCount = 1;
-
-  if (!isAdmin) {
-    cond.push(`usuario_id = $${paramCount}`);
-    params.push(user_id);
-    paramCount++;
-  }
+  const cond = [`usuario_id = $1`];
+  const params = [user_id];
+  let paramCount = 2;
 
   if (nombre) {
      cond.push(`nombre LIKE $${paramCount}`);
