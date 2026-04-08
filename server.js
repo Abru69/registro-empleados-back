@@ -450,9 +450,12 @@ app.get('/api/weekly_hours', async (req, res) => {
  *       200:
  *         description: Retorna el empleado agregado
  */
-app.get('/api/empleados', async (req, res) => {
+app.get('/api/empleados', authenticateToken, async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT * FROM empleados ORDER BY nombre ASC');
+    const [rows] = await db.query(
+      'SELECT * FROM empleados WHERE usuario_id = $1 ORDER BY nombre ASC',
+      [req.user_id]
+    );
     res.json({ success: true, data: rows });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Error fetching empleados' });
