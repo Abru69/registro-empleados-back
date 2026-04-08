@@ -1,32 +1,78 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const session = require('express-session');
-const pgSession = require('connect-pg-simple')(session);
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const upload = multer();
 const db = require('./db');
-const { pool } = require('./db');
+// --- Nuevas inclusiones Swagger ---
+const swaggerUi = require('swagger-ui-express');
+const swaggerJsdoc = require('swagger-jsdoc');
 
 const app = express();
-app.set('trust proxy', 1);
-app.use(cors({ origin: process.env.CORS_ORIGIN || 'http://localhost:4200', credentials: true }));
+
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:4200';
+const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_jwt_key_fallback';
+const PORT = process.env.PORT || 3000;
+
+app.use(cors({ 
+  origin: [FRONTEND_URL, 'http://localhost:4200'], 
+  credentials: true 
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.use(session({
-  store: new pgSession({
-    pool: pool,
-    tableName: 'session'
-  }),
-  secret: process.env.SESSION_SECRET || 'super_secret_key_asistencia',
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    secure: process.env.NODE_ENV === 'production',
-    maxAge: 24 * 60 * 60 * 1000
+// --- Configuración Swagger ---
+const swaggerOptions = {
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'API Registro de Empleados',
+      version: '1.0.0',
+      description: 'Documentación de los Endpoints (API) para asistencias de empleados.'
+    },
+    servers: [{ url: `http://localhost:${PORT}` }],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+        }
+      }
+    },
+    security: [{ bearerAuth: [] }]
+  },
+  apis: ['./server.js']
+};
+
+const swaggerDocs = swaggerJsdoc(swaggerOptions);
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
+
+
+// Middleware JWT
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  
+  if (!token) return res.json({ success: false, status: 'error', mensaje: 'No hay token de acceso' });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.json({ success: false, status: 'error', mensaje: 'Token inválido o expirado' });
+    req.user_id = user.user_id;
+    req.rol = user.rol;
+    req.usuario = user.usuario;
+    next();
+  });
+}
+
+function requireAdmin(req, res, next) {
+  if (req.rol !== 'admin') {
+    return res.status(403).json({ success: false, status: 'error', mensaje: 'Acceso denegado: se requiere rol de administrador' });
   }
-}));
+  next();
+}
 
 function hhmmFromMinutes(m) {
   if (m === null || isNaN(m)) return null;
@@ -43,24 +89,47 @@ function mins(fecha, hEntrada, hSalida) {
   return Math.round((s - e) / 60000);
 }
 
+/**
+ * @swagger
+ * /api/login:
+ *   post:
+ *     summary: Inicia sesión en el sistema y recibe un Token web
+ *     tags: [Autenticación]
+ *     security: []
+ *     requestBody:
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               usuario:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Devuelve status ok y un token Bearer.
+ */
 app.post('/api/login', upload.none(), async (req, res) => {
   try {
     const { usuario, password } = req.body;
     if (!usuario || !password) return res.json({ status: 'error', mensaje: 'Usuario y contraseña son requeridos' });
-
-    if (req.session.usuario && req.session.usuario === usuario) {
-      return res.json({ status: 'ok', mensaje: 'Sesión ya activa', usuario: req.session.usuario, rol: req.session.rol, user_id: req.session.user_id });
-    }
-
-    const [rows] = await db.query('SELECT * FROM usuarios WHERE usuario = ? LIMIT 1', [usuario]);
+    
+    const [rows] = await db.query('SELECT * FROM usuarios WHERE usuario = $1 LIMIT 1', [usuario]);
     if (rows.length > 0) {
-      const hash = rows[0].password.replace(/^\$2y\$/, '$2a$');
-      const match = await bcrypt.compare(password, hash);
+      const match = await bcrypt.compare(password, rows[0].password);
       if (match) {
-        req.session.usuario = usuario;
-        req.session.rol = rows[0].rol;
-        req.session.user_id = rows[0].id;
-        return res.json({ status: 'ok', mensaje: 'Login exitoso', usuario, rol: rows[0].rol, user_id: rows[0].id });
+        const userPayload = { user_id: rows[0].id, rol: rows[0].rol, usuario: rows[0].usuario };
+        const token = jwt.sign(userPayload, JWT_SECRET, { expiresIn: '24h' });
+        
+        return res.json({ 
+          status: 'ok', 
+          mensaje: 'Login exitoso', 
+          usuario, 
+          rol: rows[0].rol, 
+          user_id: rows[0].id,
+          token
+        });
       }
     }
     res.json({ status: 'error', mensaje: 'Usuario o contraseña incorrectos' });
@@ -70,20 +139,55 @@ app.post('/api/login', upload.none(), async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/logout:
+ *   get:
+ *     summary: Endpoint obsoleto para logout. Retorna Ok.
+ *     tags: [Autenticación]
+ *     responses:
+ *       200:
+ *         description: Exitoso
+ */
 app.get('/api/logout', (req, res) => {
-  req.session.destroy();
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok' }); // Con JWT no se necesita borrar nada en server
 });
 
+app.use('/api', (req, res, next) => {
+  if (req.path === '/login' || req.path === '/logout') return next();
+  authenticateToken(req, res, next);
+});
+
+/**
+ * @swagger
+ * /api/registrar:
+ *   post:
+ *     summary: Registra entrada o salida de un empleado.
+ *     tags: [Asistencia]
+ *     requestBody:
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               nombre:
+ *                 type: string
+ *               accion:
+ *                 type: string
+ *                 enum: [entrada, salida]
+ *     responses:
+ *       200:
+ *         description: Hora de accion devuelta
+ */
 app.post('/api/registrar', upload.none(), async (req, res) => {
-  if (!req.session || !req.session.user_id) return res.json({ status: 'error', mensaje: 'Debes iniciar sesión para registrar asistencia' });
-  const user_id = req.session.user_id;
+  const user_id = req.user_id;
   const nombre = (req.body.nombre || '').toLowerCase().trim();
   const accion = req.body.accion;
+  
   if (!nombre) return res.json({ status: 'error', mensaje: 'Debe ingresar su nombre' });
-
+  
   if (!/^[a-záéíóúñ\s]+$/.test(nombre)) {
-    return res.json({ status: 'error', mensaje: 'El nombre solo puede contener letras y espacios' });
+     return res.json({ status: 'error', mensaje: 'El nombre solo puede contener letras y espacios' });
   }
 
   const now = new Date();
@@ -92,39 +196,77 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
   const hora = now.toISOString().split('T')[1].split('.')[0];
 
   try {
-    if (accion === 'entrada') {
-      const [rows] = await db.query(`SELECT id FROM registros WHERE nombre = ? AND fecha = ? AND hora_salida IS NULL AND usuario_id = ?`, [nombre, fecha, user_id]);
-      if (rows.length > 0) return res.json({ status: 'error', mensaje: 'Debes registrar tu SALIDA antes de una nueva ENTRADA' });
-
-      await db.query(`INSERT INTO registros (nombre, fecha, hora, usuario_id) VALUES (?, ?, ?, ?)`, [nombre, fecha, hora, user_id]);
-      res.json({ status: 'ok', mensaje: `Entrada registrada a las ${hora}` });
-    } else if (accion === 'salida') {
-      const [rows] = await db.query(`SELECT id, hora FROM registros WHERE nombre = ? AND fecha = ? AND hora_salida IS NULL AND usuario_id = ? ORDER BY hora DESC LIMIT 1`, [nombre, fecha, user_id]);
-      if (rows.length === 0) return res.json({ status: 'error', mensaje: 'No hay una ENTRADA activa para registrar SALIDA' });
-
-      const horaEntrada = rows[0].hora;
-      if (hora <= horaEntrada) return res.json({ status: 'error', mensaje: 'La hora de SALIDA debe ser posterior a la hora de ENTRADA' });
-
-      await db.query(`UPDATE registros SET hora_salida = ? WHERE id = ? AND usuario_id = ?`, [hora, rows[0].id, user_id]);
-      res.json({ status: 'ok', mensaje: `Salida registrada a las ${hora}` });
-    } else {
-      res.json({ status: 'error', mensaje: 'Acción no válida' });
-    }
+     if (accion === 'entrada') {
+       const [rows] = await db.query(`SELECT id FROM registros WHERE nombre = $1 AND fecha = $2 AND hora_salida IS NULL AND usuario_id = $3`, [nombre, fecha, user_id]);
+       if (rows.length > 0) return res.json({ status: 'error', mensaje: 'Debes registrar tu SALIDA antes de una nueva ENTRADA' });
+       
+       await db.query(`INSERT INTO registros (nombre, fecha, hora, usuario_id) VALUES ($1, $2, $3, $4)`, [nombre, fecha, hora, user_id]);
+       res.json({ status: 'ok', mensaje: `Entrada registrada a las ${hora}` });
+     } else if (accion === 'salida') {
+       const [rows] = await db.query(`SELECT id, hora FROM registros WHERE nombre = $1 AND fecha = $2 AND hora_salida IS NULL AND usuario_id = $3 ORDER BY hora DESC LIMIT 1`, [nombre, fecha, user_id]);
+       if (rows.length === 0) return res.json({ status: 'error', mensaje: 'No hay una ENTRADA activa para registrar SALIDA' });
+       
+       const horaEntrada = rows[0].hora;
+       if (hora <= horaEntrada) return res.json({ status: 'error', mensaje: 'La hora de SALIDA debe ser posterior a la hora de ENTRADA' });
+       
+       const totalMinutos = mins(fecha, horaEntrada, hora);
+       const totalHoras = totalMinutos !== null ? totalMinutos / 60 : null;
+       
+       await db.query(`UPDATE registros SET hora_salida = $1, total_horas = $2 WHERE id = $3 AND usuario_id = $4`, [hora, totalHoras, rows[0].id, user_id]);
+       res.json({ status: 'ok', mensaje: `Salida registrada a las ${hora}` });
+     } else {
+       res.json({ status: 'error', mensaje: 'Acción no válida' });
+     }
   } catch (err) {
     res.json({ status: 'error', mensaje: 'Error del servidor' });
   }
 });
 
-app.get('/api/attendance_list', async (req, res) => {
-  if (!req.session || !req.session.user_id) return res.json({ data: [] });
-  const user_id = req.session.user_id;
-  const { desde, hasta, nombre } = req.query;
-  let sql = `SELECT id, nombre, fecha, hora, hora_salida, total_horas FROM registros WHERE usuario_id = ?`;
-  const params = [user_id];
 
-  if (desde && /^\d{4}-\d{2}-\d{2}$/.test(desde)) { sql += ` AND fecha >= ?`; params.push(desde); }
-  if (hasta && /^\d{4}-\d{2}-\d{2}$/.test(hasta)) { sql += ` AND fecha <= ?`; params.push(hasta); }
-  if (nombre) { sql += ` AND nombre LIKE ?`; params.push(`%${nombre}%`); }
+/**
+ * @swagger
+ * /api/attendance_list:
+ *   get:
+ *     summary: Obtiene lista paginada y filtrada de asistencias
+ *     tags: [Asistencia]
+ *     parameters:
+ *       - in: query
+ *         name: desde
+ *         schema:
+ *           type: string
+ *         description: YYYY-MM-DD
+ *       - in: query
+ *         name: hasta
+ *         schema:
+ *           type: string
+ *         description: YYYY-MM-DD
+ *       - in: query
+ *         name: nombre
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Arreglo de asistencias devuelto
+ */
+app.get('/api/attendance_list', async (req, res) => {
+  const user_id = req.user_id;
+  const isAdmin = req.rol === 'admin';
+  const { desde, hasta, nombre } = req.query;
+
+  let sql, params, paramCount;
+  if (isAdmin) {
+    sql = `SELECT id, nombre, fecha, hora, hora_salida, total_horas FROM registros WHERE 1=1`;
+    params = [];
+    paramCount = 1;
+  } else {
+    sql = `SELECT id, nombre, fecha, hora, hora_salida, total_horas FROM registros WHERE usuario_id = $1`;
+    params = [user_id];
+    paramCount = 2;
+  }
+
+  if (desde && /^\\d{4}-\\d{2}-\\d{2}$/.test(desde)) { sql += ` AND fecha >= $${paramCount}`; params.push(desde); paramCount++; }
+  if (hasta && /^\\d{4}-\\d{2}-\\d{2}$/.test(hasta)) { sql += ` AND fecha <= $${paramCount}`; params.push(hasta); paramCount++; }
+  if (nombre) { sql += ` AND nombre LIKE $${paramCount}`; params.push(`%${nombre}%`); paramCount++; }
 
   sql += ` ORDER BY fecha DESC, hora ASC`;
 
@@ -138,7 +280,7 @@ app.get('/api/attendance_list', async (req, res) => {
       return {
         id: r.id,
         nombre: r.nombre,
-        fecha: r.fecha,
+        fecha: r.fecha instanceof Date ? r.fecha.toISOString().split('T')[0] : r.fecha,
         hora: r.hora,
         hora_salida: r.hora_salida,
         total_hhmm: m !== null ? hhmmFromMinutes(m) : '---'
@@ -146,157 +288,222 @@ app.get('/api/attendance_list', async (req, res) => {
     });
     res.json({ data });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: true, message: 'db-error' });
   }
 });
 
+
+/**
+ * @swagger
+ * /api/weekly_hours:
+ *   get:
+ *     summary: Horas semanales acumuladas
+ *     tags: [Asistencia]
+ *     parameters:
+ *       - in: query
+ *         name: semana
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Devuelve agrupaciones de horas de trabajo por semana
+ */
 app.get('/api/weekly_hours', async (req, res) => {
-  if (!req.session || !req.session.user_id) return res.json({ success: true, data: [], count: 0 });
-  const user_id = req.session.user_id;
+  const user_id = req.user_id;
+  const isAdmin = req.rol === 'admin';
   const { nombre, semana } = req.query;
-  const cond = [`usuario_id = ?`];
-  const params = [user_id];
+  const cond = [];
+  const params = [];
+  let paramCount = 1;
+
+  if (!isAdmin) {
+    cond.push(`usuario_id = $${paramCount}`);
+    params.push(user_id);
+    paramCount++;
+  }
+
   if (nombre) {
-    cond.push(`nombre LIKE ?`);
-    params.push(`%${nombre}%`);
+     cond.push(`nombre LIKE $${paramCount}`);
+     params.push(`%${nombre}%`);
+     paramCount++;
   }
   const where = cond.length > 0 ? `WHERE ` + cond.join(' AND ') : '';
   const sql = `SELECT * FROM registros ${where}`;
 
-  function getISOYearWeek(dateStr) {
-    const d = new Date(dateStr);
-    d.setHours(0, 0, 0, 0);
-    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-    const yearStart = new Date(Date.UTC(d.getFullYear(), 0, 1));
-    const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-    return `${d.getFullYear()}${weekNo.toString().padStart(2, '0')}`;
+  function getISOYearWeek(dateInput) {
+     let dateStr = dateInput instanceof Date ? dateInput.toISOString().split('T')[0] : dateInput;
+     const d = new Date(dateStr);
+     d.setHours(0, 0, 0, 0);
+     d.setDate(d.getDate() + 4 - (d.getDay()||7));
+     const yearStart = new Date(Date.UTC(d.getFullYear(),0,1));
+     const weekNo = Math.ceil(( ( (d - yearStart) / 86400000) + 1)/7);
+     return `${d.getFullYear()}${weekNo.toString().padStart(2, '0')}`;
   }
 
   try {
-    const [rows] = await db.query(sql, params);
+     const [rows] = await db.query(sql, params);
+     
+     let filtered = rows;
+     if (semana && /^(\\d{4})-W(\\d{2})$/.test(semana)) {
+        const match = semana.match(/^(\\d{4})-W(\\d{2})$/);
+        const yw = `${match[1]}${match[2]}`;
+        filtered = rows.filter(r => getISOYearWeek(r.fecha) === yw);
+     }
 
-    let filtered = rows;
-    if (semana && /^(\d{4})-W(\d{2})$/.test(semana)) {
-      const match = semana.match(/^(\d{4})-W(\d{2})$/);
-      const yw = `${match[1]}${match[2]}`;
-      filtered = rows.filter(r => getISOYearWeek(r.fecha) === yw);
-    }
+     const grouped = {};
+     filtered.forEach(r => {
+        let f = r.fecha instanceof Date ? r.fecha.toISOString().split('T')[0] : r.fecha;
+        r.fechaStr = f;
+        const yw = getISOYearWeek(f);
+        const key = `${r.nombre}_${yw}`;
+        if (!grouped[key]) {
+           grouped[key] = { nombre: r.nombre, yearWeek: yw, registros: [], fechas: new Set() };
+        }
+        grouped[key].registros.push(r);
+        grouped[key].fechas.add(f);
+     });
 
-    const grouped = {};
-    filtered.forEach(r => {
-      const yw = getISOYearWeek(r.fecha);
-      const key = `${r.nombre}_${yw}`;
-      if (!grouped[key]) {
-        grouped[key] = { nombre: r.nombre, yearWeek: yw, registros: [], fechas: new Set() };
-      }
-      grouped[key].registros.push(r);
-      grouped[key].fechas.add(r.fecha);
-    });
+     const out = [];
+     for (const key of Object.keys(grouped)) {
+         const grupo = grouped[key];
+         const diasConDatos = grupo.fechas.size;
+         const year = parseInt(grupo.yearWeek.substring(0,4));
+         const weekNum = parseInt(grupo.yearWeek.substring(4));
 
-    const out = [];
-    for (const key of Object.keys(grouped)) {
-      const grupo = grouped[key];
-      const diasConDatos = grupo.fechas.size;
-      const year = parseInt(grupo.yearWeek.substring(0, 4));
-      const weekNum = parseInt(grupo.yearWeek.substring(4));
+         function getISODateByWeek(y, w, dow) {
+            let simple = new Date(Date.UTC(y, 0, 1 + (w - 1) * 7));
+            let dowMod = simple.getUTCDay() || 7;
+            const ISOweekStart = new Date(simple.getTime());
+            ISOweekStart.setUTCDate(simple.getUTCDate() - dowMod + 1);
+            ISOweekStart.setUTCDate(ISOweekStart.getUTCDate() + dow - 1);
+            return ISOweekStart.toISOString().split('T')[0];
+         }
 
-      function getISODateByWeek(y, w, dow) {
-        let simple = new Date(Date.UTC(y, 0, 1 + (w - 1) * 7));
-        let dowMod = simple.getUTCDay() || 7;
-        const ISOweekStart = new Date(simple.getTime());
-        ISOweekStart.setUTCDate(simple.getUTCDate() - dowMod + 1);
-        ISOweekStart.setUTCDate(ISOweekStart.getUTCDate() + dow - 1);
-        return ISOweekStart.toISOString().split('T')[0];
-      }
+         const lunesISO = getISODateByWeek(year, weekNum, 1);
+         const domingoISO = getISODateByWeek(year, weekNum, 7);
+         const lF = lunesISO.split('-').reverse().join('/');
+         const dF = domingoISO.split('-').reverse().join('/');
 
-      const lunesISO = getISODateByWeek(year, weekNum, 1);
-      const domingoISO = getISODateByWeek(year, weekNum, 7);
-      const lF = lunesISO.split('-').reverse().join('/');
-      const dF = domingoISO.split('-').reverse().join('/');
+         let totalMinutos = 0;
+         const regS = grupo.registros.sort((a,b) => a.fechaStr.localeCompare(b.fechaStr) || a.hora.localeCompare(b.hora));
+         
+         for (const reg of regS) {
+             let m = null;
+             if (reg.total_horas !== null) m = Math.round(parseFloat(reg.total_horas) * 60);
+             else m = mins(reg.fechaStr, reg.hora, reg.hora_salida);
+             if (m !== null && m > 0) totalMinutos += m;
+         }
 
-      let totalMinutos = 0;
-      const regS = grupo.registros.sort((a, b) => a.fecha.localeCompare(b.fecha) || a.hora.localeCompare(b.hora));
+         const horasDecimal = totalMinutos / 60;
+         const datosSuficientes = diasConDatos >= 1;
 
-      for (const reg of regS) {
-        let m = null;
-        if (reg.total_horas !== null) m = Math.round(parseFloat(reg.total_horas) * 60);
-        else m = mins(reg.fecha, reg.hora, reg.hora_salida);
-        if (m !== null && m > 0) totalMinutos += m;
-      }
+         out.push({
+           nombre: grupo.nombre,
+           semana_iso: `Semana ${weekNum}`,
+           fecha_inicio: lunesISO,
+           fecha_fin: domingoISO,
+           rango_formato: `Lunes ${lF} a Domingo ${dF}`,
+           total_registros: diasConDatos,
+           total_horas_decimal: datosSuficientes ? Number(horasDecimal.toFixed(2)) : null,
+           total_minutos: datosSuficientes ? totalMinutos : null,
+           datos_suficientes: datosSuficientes,
+           mensaje: datosSuficientes ? null : 'Datos insuficientes para calcular semana completa'
+        });
+     }
 
-      const horasDecimal = totalMinutos / 60;
-      const datosSuficientes = diasConDatos >= 1;
+     out.sort((a,b) => {
+         const ywA = a.semana_iso;
+         const ywB = b.semana_iso;
+         if (ywA !== ywB) return ywB.localeCompare(ywA);
+         return a.nombre.localeCompare(b.nombre);
+     });
 
-      out.push({
-        nombre: grupo.nombre,
-        semana_iso: `Semana ${weekNum}`,
-        fecha_inicio: lunesISO,
-        fecha_fin: domingoISO,
-        rango_formato: `Lunes ${lF} a Domingo ${dF}`,
-        total_registros: diasConDatos,
-        total_horas_decimal: datosSuficientes ? Number(horasDecimal.toFixed(2)) : null,
-        total_minutos: datosSuficientes ? totalMinutos : null,
-        datos_suficientes: datosSuficientes,
-        mensaje: datosSuficientes ? null : 'Datos insuficientes para calcular semana completa'
-      });
-    }
-
-    out.sort((a, b) => {
-      const ywA = a.semana_iso;
-      const ywB = b.semana_iso;
-      if (ywA !== ywB) return ywB.localeCompare(ywA);
-      return a.nombre.localeCompare(b.nombre);
-    });
-
-    res.json({ success: true, data: out, count: out.length });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: true, success: false, message: 'Error', data: [] });
+     res.json({ success: true, data: out, count: out.length });
+  } catch(err) {
+     console.error(err);
+     res.status(500).json({ error: true, success: false, message: 'Error', data: [] });
   }
 });
 
+/**
+ * @swagger
+ * /api/empleados:
+ *   get:
+ *     summary: Obtiene los empleados registrados
+ *     tags: [Empleados]
+ *     responses:
+ *       200:
+ *         description: Lista de empleados
+ *   post:
+ *     summary: Agrega un Empleado
+ *     tags: [Empleados]
+ *     requestBody:
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               nombre:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Retorna el empleado agregado
+ */
 app.get('/api/empleados', async (req, res) => {
-  if (!req.session || !req.session.user_id) return res.json({ success: false, message: 'No autenticado', data: [] });
-  const user_id = req.session.user_id;
   try {
-    const [rows] = await db.query('SELECT * FROM empleados WHERE usuario_id = ? ORDER BY nombre ASC', [user_id]);
+    const [rows] = await db.query('SELECT * FROM empleados ORDER BY nombre ASC');
     res.json({ success: true, data: rows });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Error fetching empleados' });
   }
 });
 
-app.post('/api/empleados', upload.none(), async (req, res) => {
-  if (!req.session || !req.session.user_id) return res.json({ success: false, message: 'No autenticado' });
-  const user_id = req.session.user_id;
+app.post('/api/empleados', requireAdmin, upload.none(), async (req, res) => {
+  const user_id = req.user_id;
   try {
     const nombre = (req.body.nombre || '').trim();
     if (!nombre) return res.json({ success: false, message: 'Nombre es requerido' });
-
-    await db.query('INSERT INTO empleados (nombre, usuario_id) VALUES (?, ?)', [nombre, user_id]);
-    const [rows] = await db.query('SELECT * FROM empleados WHERE nombre = ? AND usuario_id = ? LIMIT 1', [nombre, user_id]);
+    
+    await db.query('INSERT INTO empleados (nombre, usuario_id) VALUES ($1, $2)', [nombre, user_id]);
+    const [rows] = await db.query('SELECT * FROM empleados WHERE nombre = $1 AND usuario_id = $2 LIMIT 1', [nombre, user_id]);
     res.json({ success: true, data: rows[0], message: 'Empleado agregado' });
   } catch (err) {
-    if (err.message.includes('UNIQUE') || err.message.includes('duplicate key')) {
+    if (err.message.includes('unique') || err.message.includes('duplicate')) {
       return res.json({ success: false, message: 'El empleado ya existe para este usuario' });
     }
+    console.error(err);
     res.status(500).json({ success: false, message: 'Error interno' });
   }
 });
 
-app.delete('/api/empleados/:id', async (req, res) => {
-  if (!req.session || !req.session.user_id) return res.json({ success: false, message: 'No autenticado' });
-  const user_id = req.session.user_id;
+/**
+ * @swagger
+ * /api/empleados/{id}:
+ *   delete:
+ *     summary: Elimina un empleado
+ *     tags: [Empleados]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Success true
+ */
+app.delete('/api/empleados/:id', requireAdmin, async (req, res) => {
+  const user_id = req.user_id;
   try {
     const id = req.params.id;
-    await db.query('DELETE FROM empleados WHERE id = ? AND usuario_id = ?', [id, user_id]);
+    await db.query('DELETE FROM empleados WHERE id = $1 AND usuario_id = $2', [id, user_id]);
     res.json({ success: true, message: 'Empleado eliminado' });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Error interno' });
   }
 });
 
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });

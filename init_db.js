@@ -1,59 +1,61 @@
-const db = require('./db');
-const bcrypt = require('bcrypt');
+const { query, pool } = require('./db');
+const bcrypt = require('bcryptjs');
 
-async function init() {
-  console.log("Inicializando base de datos PostgreSQL...");
+async function initDB() {
+  console.log('Iniciando DB...');
 
-  await db.query(`
+  await query(`
     CREATE TABLE IF NOT EXISTS usuarios (
       id SERIAL PRIMARY KEY,
-      usuario TEXT UNIQUE NOT NULL,
-      password TEXT NOT NULL,
-      rol TEXT NOT NULL DEFAULT 'user'
+      usuario VARCHAR(50) UNIQUE NOT NULL,
+      password VARCHAR(255) NOT NULL,
+      rol VARCHAR(20) DEFAULT 'user'
     );
   `);
 
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS registros (
-      id SERIAL PRIMARY KEY,
-      nombre TEXT NOT NULL,
-      fecha TEXT NOT NULL,
-      hora TEXT NOT NULL,
-      hora_salida TEXT,
-      total_horas REAL,
-      usuario_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE
-    );
-  `);
-
-  await db.query(`
+  await query(`
     CREATE TABLE IF NOT EXISTS empleados (
       id SERIAL PRIMARY KEY,
-      nombre TEXT NOT NULL,
-      usuario_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
-      UNIQUE(nombre, usuario_id)
+      nombre VARCHAR(100) NOT NULL,
+      usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+      UNIQUE (nombre, usuario_id)
     );
   `);
 
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS session (
-      sid VARCHAR NOT NULL COLLATE "default",
-      sess JSON NOT NULL,
-      expire TIMESTAMP(6) NOT NULL,
-      CONSTRAINT session_pkey PRIMARY KEY (sid)
+  await query(`
+    CREATE TABLE IF NOT EXISTS registros (
+      id SERIAL PRIMARY KEY,
+      nombre VARCHAR(100) NOT NULL,
+      fecha DATE NOT NULL,
+      hora TIME NOT NULL,
+      hora_salida TIME,
+      total_horas REAL,
+      usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE
     );
   `);
 
-  await db.query(`
-    CREATE INDEX IF NOT EXISTS IDX_session_expire ON session (expire);
-  `);
+  console.log('Tablas creadas (si no existían).');
 
-  const hash = await bcrypt.hash('12345', 10);
-  await db.query(
-    `INSERT INTO usuarios (usuario, password, rol) VALUES (?, ?, ?) ON CONFLICT (usuario) DO NOTHING`,
-    ['admin', hash, 'admin']
-  );
-  console.log("Usuario admin creado (usuario: admin / clave: 12345).");
-  console.log("Inicialización exitosa.");
+  const [usuarios] = await query('SELECT * FROM usuarios WHERE usuario = $1', ['admin']);
+  if (usuarios.length === 0) {
+    const hash = await bcrypt.hash('admin123', 10);
+    await query('INSERT INTO usuarios (usuario, password, rol) VALUES ($1, $2, $3)', ['admin', hash, 'admin']);
+    console.log('Usuario admin por defecto insertado.');
+  } else {
+    console.log('El usuario admin ya existe.');
+  }
+
+  const [empleadoUsers] = await query('SELECT * FROM usuarios WHERE usuario = $1', ['empleado']);
+  if (empleadoUsers.length === 0) {
+    const hashEmpleado = await bcrypt.hash('empleado123', 10);
+    await query('INSERT INTO usuarios (usuario, password, rol) VALUES ($1, $2, $3)', ['empleado', hashEmpleado, 'user']);
+    console.log('Usuario empleado por defecto insertado.');
+  } else {
+    console.log('El usuario empleado ya existe.');
+  }
+
+  // Cerrar la conexión
+  await pool.end();
 }
 
-init().catch(console.error);
+initDB().catch(console.error);

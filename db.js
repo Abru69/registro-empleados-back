@@ -1,23 +1,20 @@
 const { Pool } = require('pg');
- 
+require('dotenv').config();
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL
-    ? { rejectUnauthorized: false }
-    : false
+  connectionString: process.env.DATABASE_URL || 'postgresql://localhost/registros_db',
+  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false }
 });
- 
-// Convert ? placeholders to $1, $2, ... for pg
-function convertPlaceholders(sql) {
-  let i = 0;
-  return sql.replace(/\?/g, () => `$${++i}`);
+
+async function query(text, params = []) {
+  try {
+    const res = await pool.query(text, params);
+    // Para mantener retrocompatibilidad con el formato esperado [rows]
+    return [res.rows]; 
+  } catch (err) {
+    console.error('Database Query Error:', err);
+    throw err;
+  }
 }
- 
-async function query(sql, params = []) {
-  const pgSql = convertPlaceholders(sql);
-  const result = await pool.query(pgSql, params);
-  return [result.rows];
-}
- 
+
 module.exports = { query, pool };
- 
