@@ -175,6 +175,12 @@ app.use('/api', (req, res, next) => {
  *               accion:
  *                 type: string
  *                 enum: [entrada, salida]
+ *               fecha:
+ *                 type: string
+ *                 description: Fecha local del navegador en formato YYYY-MM-DD
+ *               hora:
+ *                 type: string
+ *                 description: Hora local del navegador en formato HH:MM:SS
  *     responses:
  *       200:
  *         description: Hora de accion devuelta
@@ -183,6 +189,8 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
   const user_id = req.user_id;
   const nombre = (req.body.nombre || '').toLowerCase().trim();
   const accion = req.body.accion;
+  let fecha = req.body.fecha;
+  let hora = req.body.hora;
   
   if (!nombre) return res.json({ status: 'error', mensaje: 'Debe ingresar su nombre' });
   
@@ -191,9 +199,14 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
   }
 
   const now = new Date();
-  now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
-  const fecha = now.toISOString().split('T')[0];
-  const hora = now.toISOString().split('T')[1].split('.')[0];
+  const pad = (value) => value.toString().padStart(2, '0');
+  const serverFecha = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const serverHora = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  const fechaRegex = /^\d{4}-\d{2}-\d{2}$/;
+  const horaRegex = /^\d{2}:\d{2}:\d{2}$/;
+
+  if (!fecha || !fechaRegex.test(fecha)) fecha = serverFecha;
+  if (!hora || !horaRegex.test(hora)) hora = serverHora;
 
   try {
      if (accion === 'entrada') {
