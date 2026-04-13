@@ -63,6 +63,7 @@ function authenticateToken(req, res, next) {
     req.user_id = user.user_id;
     req.rol = user.rol;
     req.usuario = user.usuario;
+    req.admin_id = user.admin_id; // Add admin_id from token
     next();
   });
 }
@@ -119,7 +120,12 @@ app.post('/api/login', upload.none(), async (req, res) => {
     if (rows.length > 0) {
       const match = await bcrypt.compare(password, rows[0].password);
       if (match) {
-        const userPayload = { user_id: rows[0].id, rol: rows[0].rol, usuario: rows[0].usuario };
+        const userPayload = { 
+          user_id: rows[0].id, 
+          rol: rows[0].rol, 
+          usuario: rows[0].usuario,
+          admin_id: rows[0].admin_id 
+        };
         const token = jwt.sign(userPayload, JWT_SECRET, { expiresIn: '24h' });
         
         return res.json({ 
@@ -186,7 +192,7 @@ app.use('/api', (req, res, next) => {
  *         description: Hora de accion devuelta
  */
 app.post('/api/registrar', upload.none(), async (req, res) => {
-  const user_id = req.user_id;
+  const target_id = req.admin_id || req.user_id; // <-- The ID of the silo owner
   const nombre = (req.body.nombre || '').toLowerCase().trim();
   const accion = req.body.accion;
   let fecha = req.body.fecha;
@@ -210,13 +216,13 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
 
   try {
      if (accion === 'entrada') {
-       const [rows] = await db.query(`SELECT id FROM registros WHERE nombre = $1 AND fecha = $2 AND hora_salida IS NULL AND usuario_id = $3`, [nombre, fecha, user_id]);
+       const [rows] = await db.query(`SELECT id FROM registros WHERE nombre = $1 AND fecha = $2 AND hora_salida IS NULL AND usuario_id = $3`, [nombre, fecha, target_id]);
        if (rows.length > 0) return res.json({ status: 'error', mensaje: 'Debes registrar tu SALIDA antes de una nueva ENTRADA' });
        
-       await db.query(`INSERT INTO registros (nombre, fecha, hora, usuario_id) VALUES ($1, $2, $3, $4)`, [nombre, fecha, hora, user_id]);
+       await db.query(`INSERT INTO registros (nombre, fecha, hora, usuario_id) VALUES ($1, $2, $3, $4)`, [nombre, fecha, hora, target_id]);
        res.json({ status: 'ok', mensaje: `Entrada registrada a las ${hora}` });
      } else if (accion === 'salida') {
-       const [rows] = await db.query(`SELECT id, hora FROM registros WHERE nombre = $1 AND fecha = $2 AND hora_salida IS NULL AND usuario_id = $3 ORDER BY hora DESC LIMIT 1`, [nombre, fecha, user_id]);
+       const [rows] = await db.query(`SELECT id, hora FROM registros WHERE nombre = $1 AND fecha = $2 AND hora_salida IS NULL AND usuario_id = $3 ORDER BY hora DESC LIMIT 1`, [nombre, fecha, target_id]);
        if (rows.length === 0) return res.json({ status: 'error', mensaje: 'No hay una ENTRADA activa para registrar SALIDA' });
        
        const horaEntrada = rows[0].hora;
@@ -225,7 +231,7 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
        const totalMinutos = mins(fecha, horaEntrada, hora);
        const totalHoras = totalMinutos !== null ? totalMinutos / 60 : null;
        
-       await db.query(`UPDATE registros SET hora_salida = $1, total_horas = $2 WHERE id = $3 AND usuario_id = $4`, [hora, totalHoras, rows[0].id, user_id]);
+       await db.query(`UPDATE registros SET hora_salida = $1, total_horas = $2 WHERE id = $3 AND usuario_id = $4`, [hora, totalHoras, rows[0].id, target_id]);
        res.json({ status: 'ok', mensaje: `Salida registrada a las ${hora}` });
      } else {
        res.json({ status: 'error', mensaje: 'Acción no válida' });
@@ -262,11 +268,11 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
  *         description: Arreglo de asistencias devuelto
  */
 app.get('/api/attendance_list', async (req, res) => {
-  const user_id = req.user_id;
+  const target_id = req.admin_id || req.user_id;
   const { desde, hasta, nombre } = req.query;
 
   let sql = `SELECT id, nombre, fecha, hora, hora_salida, total_horas FROM registros WHERE usuario_id = $1`;
-  let params = [user_id];
+  let params = [target_id];
   let paramCount = 2;
 
   if (desde && /^\\d{4}-\\d{2}-\\d{2}$/.test(desde)) { sql += ` AND fecha >= $${paramCount}`; params.push(desde); paramCount++; }
@@ -315,10 +321,10 @@ app.get('/api/attendance_list', async (req, res) => {
  *         description: Devuelve agrupaciones de horas de trabajo por semana
  */
 app.get('/api/weekly_hours', async (req, res) => {
-  const user_id = req.user_id;
+  const target_id = req.admin_id || req.user_id;
   const { nombre, semana } = req.query;
   const cond = [`usuario_id = $1`];
-  const params = [user_id];
+  const params = [target_id];
   let paramCount = 2;
 
   if (nombre) {
@@ -449,10 +455,11 @@ app.get('/api/weekly_hours', async (req, res) => {
  *         description: Retorna el empleado agregado
  */
 app.get('/api/empleados', authenticateToken, async (req, res) => {
+  const target_id = req.admin_id || req.user_id;
   try {
     const [rows] = await db.query(
       'SELECT * FROM empleados WHERE usuario_id = $1 ORDER BY nombre ASC',
-      [req.user_id]
+      [target_id]
     );
     res.json({ success: true, data: rows });
   } catch (err) {
