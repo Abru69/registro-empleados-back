@@ -267,6 +267,13 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
        }
        
        await db.query(`INSERT INTO registros (nombre, fecha, hora, usuario_id) VALUES ($1, $2, $3, $4)`, [nombre, fecha, hora, target_id]);
+       const dataNotif = {
+         tipo: 'entrada',
+         nombre: nombre,
+         hora: hora,
+         mensaje: `${nombre} registró ENTRADA`
+       };
+       broadcastNotification(dataNotif);
        res.json({ status: 'ok', mensaje: `Entrada registrada a las ${hora}` });
 
      } else if (accion === 'salida') {
@@ -302,6 +309,13 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
        const totalHoras = totalMinutos !== null ? totalMinutos / 60 : null;
        
        await db.query(`UPDATE registros SET hora_salida = $1, total_horas = $2 WHERE id = $3 AND usuario_id = $4`, [hora, totalHoras, registroAnterior.id, target_id]);
+       const dataNotifSalida = {
+         tipo: 'salida',
+         nombre: nombre,
+         hora: hora,
+         mensaje: `${nombre} registró SALIDA`
+       };
+       broadcastNotification(dataNotifSalida);
        res.json({ status: 'ok', mensaje: `Salida registrada a las ${hora}` });
 
      } else {
