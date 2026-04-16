@@ -216,23 +216,64 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
 
   try {
      if (accion === 'entrada') {
-       const [rows] = await db.query(`SELECT id FROM registros WHERE nombre = $1 AND fecha = $2 AND hora_salida IS NULL AND usuario_id = $3`, [nombre, fecha, target_id]);
-       if (rows.length > 0) return res.json({ status: 'error', mensaje: 'Debes registrar tu SALIDA antes de una nueva ENTRADA' });
+       const [rows] = await db.query(`SELECT id, fecha, hora FROM registros WHERE nombre = $1 AND hora_salida IS NULL AND usuario_id = $2 ORDER BY fecha DESC, hora DESC LIMIT 1`, [nombre, target_id]);
+       
+       if (rows.length > 0) {
+         const dEntrada = new Date(rows[0].fecha instanceof Date ? rows[0].fecha.toISOString().split('T')[0] : rows[0].fecha);
+         const dActual = new Date(fecha);
+         const diffTime = dActual - dEntrada;
+         const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+         
+         let turnoActivo = false;
+         if (diffDays === 0) {
+           turnoActivo = true;
+         } else if (diffDays === 1 && hora <= '02:00:00') {
+           turnoActivo = true;
+         }
+         
+         if (turnoActivo) {
+           return res.json({ status: 'error', mensaje: 'Debes registrar tu SALIDA anterior antes de una nueva ENTRADA' });
+         }
+       }
        
        await db.query(`INSERT INTO registros (nombre, fecha, hora, usuario_id) VALUES ($1, $2, $3, $4)`, [nombre, fecha, hora, target_id]);
        res.json({ status: 'ok', mensaje: `Entrada registrada a las ${hora}` });
+
      } else if (accion === 'salida') {
-       const [rows] = await db.query(`SELECT id, hora FROM registros WHERE nombre = $1 AND fecha = $2 AND hora_salida IS NULL AND usuario_id = $3 ORDER BY hora DESC LIMIT 1`, [nombre, fecha, target_id]);
+       const [rows] = await db.query(`SELECT id, fecha, hora FROM registros WHERE nombre = $1 AND hora_salida IS NULL AND usuario_id = $2 ORDER BY fecha DESC, hora DESC LIMIT 1`, [nombre, target_id]);
        if (rows.length === 0) return res.json({ status: 'error', mensaje: 'No hay una ENTRADA activa para registrar SALIDA' });
        
-       const horaEntrada = rows[0].hora;
-       if (hora <= horaEntrada) return res.json({ status: 'error', mensaje: 'La hora de SALIDA debe ser posterior a la hora de ENTRADA' });
+       const registroAnterior = rows[0];
+       const fechaEntrada = registroAnterior.fecha;
+       const horaEntrada = registroAnterior.hora;
        
-       const totalMinutos = mins(fecha, horaEntrada, hora);
+       const dEntrada = new Date(fechaEntrada instanceof Date ? fechaEntrada.toISOString().split('T')[0] : fechaEntrada);
+       const dActual = new Date(fecha);
+       const diffTime = dActual - dEntrada;
+       const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+       
+       let isExpired = false;
+       if (diffDays === 0) {
+           if (hora <= horaEntrada) return res.json({ status: 'error', mensaje: 'La hora de SALIDA debe ser posterior a la hora de ENTRADA' });
+       } else if (diffDays === 1) {
+           if (hora > '02:00:00') {
+               isExpired = true;
+           }
+       } else {
+           isExpired = true;
+       }
+       
+       if (isExpired) {
+           return res.json({ status: 'error', mensaje: 'Turno expirado (límite superó las 2:00 AM). Solicita al administrador registrar tus horas manuales.' });
+       }
+       
+       let fEntradaStr = fechaEntrada instanceof Date ? fechaEntrada.toISOString().split('T')[0] : fechaEntrada;
+       const totalMinutos = mins(fEntradaStr, horaEntrada, hora);
        const totalHoras = totalMinutos !== null ? totalMinutos / 60 : null;
        
-       await db.query(`UPDATE registros SET hora_salida = $1, total_horas = $2 WHERE id = $3 AND usuario_id = $4`, [hora, totalHoras, rows[0].id, target_id]);
+       await db.query(`UPDATE registros SET hora_salida = $1, total_horas = $2 WHERE id = $3 AND usuario_id = $4`, [hora, totalHoras, registroAnterior.id, target_id]);
        res.json({ status: 'ok', mensaje: `Salida registrada a las ${hora}` });
+
      } else {
        res.json({ status: 'error', mensaje: 'Acción no válida' });
      }
