@@ -54,7 +54,11 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
 // Middleware JWT
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+  let token = authHeader && authHeader.split(' ')[1];
+  
+  if (!token && req.query && req.query.token) {
+    token = req.query.token;
+  }
   
   if (!token) return res.json({ success: false, status: 'error', mensaje: 'No hay token de acceso' });
 
@@ -162,6 +166,32 @@ app.get('/api/logout', (req, res) => {
 app.use('/api', (req, res, next) => {
   if (req.path === '/login' || req.path === '/logout') return next();
   authenticateToken(req, res, next);
+});
+
+// ====== SERVER-SENT EVENTS (SSE) ====== //
+let sseClients = [];
+
+function broadcastNotification(data) {
+  sseClients.forEach(client => {
+    client.res.write(`data: ${JSON.stringify(data)}\n\n`);
+  });
+}
+
+app.get('/api/notifications', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive'
+  });
+
+  res.write(': connected\n\n');
+
+  const newClient = { id: Date.now(), res };
+  sseClients.push(newClient);
+
+  req.on('close', () => {
+    sseClients = sseClients.filter(c => c.id !== newClient.id);
+  });
 });
 
 /**
