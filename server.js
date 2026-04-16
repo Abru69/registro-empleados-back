@@ -316,8 +316,8 @@ app.get('/api/attendance_list', async (req, res) => {
   let params = [target_id];
   let paramCount = 2;
 
-  if (desde && /^\\d{4}-\\d{2}-\\d{2}$/.test(desde)) { sql += ` AND fecha >= $${paramCount}`; params.push(desde); paramCount++; }
-  if (hasta && /^\\d{4}-\\d{2}-\\d{2}$/.test(hasta)) { sql += ` AND fecha <= $${paramCount}`; params.push(hasta); paramCount++; }
+  if (desde && /^\d{4}-\d{2}-\d{2}$/.test(desde)) { sql += ` AND fecha >= $${paramCount}`; params.push(desde); paramCount++; }
+  if (hasta && /^\d{4}-\d{2}-\d{2}$/.test(hasta)) { sql += ` AND fecha <= $${paramCount}`; params.push(hasta); paramCount++; }
   if (nombre) { sql += ` AND nombre LIKE $${paramCount}`; params.push(`%${nombre}%`); paramCount++; }
 
   sql += ` ORDER BY fecha DESC, hora ASC`;
