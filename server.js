@@ -390,8 +390,8 @@ app.get('/api/weekly_hours', async (req, res) => {
      const [rows] = await db.query(sql, params);
      
      let filtered = rows;
-     if (semana && /^(\\d{4})-W(\\d{2})$/.test(semana)) {
-        const match = semana.match(/^(\\d{4})-W(\\d{2})$/);
+     if (semana && /^(\d{4})-W(\d{2})$/.test(semana)) {
+        const match = semana.match(/^(\d{4})-W(\d{2})$/);
         const yw = `${match[1]}${match[2]}`;
         filtered = rows.filter(r => getISOYearWeek(r.fecha) === yw);
      }
