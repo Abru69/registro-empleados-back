@@ -362,7 +362,7 @@ app.get('/api/attendance_list', async (req, res) => {
 
   if (desde && /^\d{4}-\d{2}-\d{2}$/.test(desde)) { sql += ` AND fecha >= $${paramCount}`; params.push(desde); paramCount++; }
   if (hasta && /^\d{4}-\d{2}-\d{2}$/.test(hasta)) { sql += ` AND fecha <= $${paramCount}`; params.push(hasta); paramCount++; }
-  if (nombre) { sql += ` AND nombre LIKE $${paramCount}`; params.push(`%${nombre}%`); paramCount++; }
+  if (nombre) { sql += ` AND nombre ILIKE $${paramCount}`; params.push(`%${nombre}%`); paramCount++; }
 
   sql += ` ORDER BY fecha DESC, hora ASC`;
 
@@ -413,7 +413,7 @@ app.get('/api/weekly_hours', async (req, res) => {
   let paramCount = 2;
 
   if (nombre) {
-     cond.push(`nombre LIKE $${paramCount}`);
+     cond.push(`nombre ILIKE $${paramCount}`);
      params.push(`%${nombre}%`);
      paramCount++;
   }
