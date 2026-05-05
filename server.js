@@ -86,6 +86,19 @@ function hhmmFromMinutes(m) {
   return `${h.toString().padStart(2, '0')}:${mm.toString().padStart(2, '0')}`;
 }
 
+// Compara dos fechas YYYY-MM-DD devolviendo la diferencia en días.
+// Usa mediodía UTC para evitar problemas de zona horaria (ej. CDMX UTC-6).
+function diffDays(fechaStr1, fechaStr2) {
+  const d1 = new Date(`${fechaStr1}T12:00:00Z`);
+  const d2 = new Date(`${fechaStr2}T12:00:00Z`);
+  return Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
+}
+
+function toDateStr(val) {
+  if (val instanceof Date) return val.toISOString().split('T')[0];
+  return val;
+}
+
 function mins(fecha, hEntrada, hSalida) {
   if (!hEntrada || !hSalida) return null;
   let e = new Date(`${fecha}T${hEntrada}`);
@@ -249,15 +262,13 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
        const [rows] = await db.query(`SELECT id, fecha, hora FROM registros WHERE nombre = $1 AND hora_salida IS NULL AND usuario_id = $2 ORDER BY fecha DESC, hora DESC LIMIT 1`, [nombre, target_id]);
        
        if (rows.length > 0) {
-         const dEntrada = new Date(rows[0].fecha instanceof Date ? rows[0].fecha.toISOString().split('T')[0] : rows[0].fecha);
-         const dActual = new Date(fecha);
-         const diffTime = dActual - dEntrada;
-         const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+         const fechaEntradaStr = toDateStr(rows[0].fecha);
+         const dias = diffDays(fechaEntradaStr, fecha);
          
          let turnoActivo = false;
-         if (diffDays === 0) {
+         if (dias === 0) {
            turnoActivo = true;
-         } else if (diffDays === 1 && hora <= '02:00:00') {
+         } else if (dias === 1 && hora <= '02:00:00') {
            turnoActivo = true;
          }
          
@@ -281,18 +292,15 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
        if (rows.length === 0) return res.json({ status: 'error', mensaje: 'No hay una ENTRADA activa para registrar SALIDA' });
        
        const registroAnterior = rows[0];
-       const fechaEntrada = registroAnterior.fecha;
+       const fechaEntradaStr = toDateStr(registroAnterior.fecha);
        const horaEntrada = registroAnterior.hora;
        
-       const dEntrada = new Date(fechaEntrada instanceof Date ? fechaEntrada.toISOString().split('T')[0] : fechaEntrada);
-       const dActual = new Date(fecha);
-       const diffTime = dActual - dEntrada;
-       const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+       const dias = diffDays(fechaEntradaStr, fecha);
        
        let isExpired = false;
-       if (diffDays === 0) {
+       if (dias === 0) {
            if (hora <= horaEntrada) return res.json({ status: 'error', mensaje: 'La hora de SALIDA debe ser posterior a la hora de ENTRADA' });
-       } else if (diffDays === 1) {
+       } else if (dias === 1) {
            if (hora > '02:00:00') {
                isExpired = true;
            }
@@ -304,8 +312,7 @@ app.post('/api/registrar', upload.none(), async (req, res) => {
            return res.json({ status: 'error', mensaje: 'Turno expirado (límite superó las 2:00 AM). Solicita al administrador registrar tus horas manuales.' });
        }
        
-       let fEntradaStr = fechaEntrada instanceof Date ? fechaEntrada.toISOString().split('T')[0] : fechaEntrada;
-       const totalMinutos = mins(fEntradaStr, horaEntrada, hora);
+       const totalMinutos = mins(fechaEntradaStr, horaEntrada, hora);
        const totalHoras = totalMinutos !== null ? totalMinutos / 60 : null;
        
        await db.query(`UPDATE registros SET hora_salida = $1, total_horas = $2 WHERE id = $3 AND usuario_id = $4`, [hora, totalHoras, registroAnterior.id, target_id]);
